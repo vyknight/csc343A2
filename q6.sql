@@ -65,6 +65,10 @@ create view BottomThree as
 
 -- Your query that answers the question goes below the "insert into" line:
 INSERT INTO q6
-    TopOne UNION TopTwo UNION TopThree UNION BottomOne UNION BottomTwo UNION BottomThree;
+    ((select * from TopOne) UNION (select * from TopTwo)
+         UNION 
+    (select * from TopThree) UNION (select * from BottomOne))
+     UNION 
+    (select * from BottomTwo) UNION (select * from BottomThree);
 
 -- UNTESTED
