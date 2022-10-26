@@ -15,9 +15,21 @@ CREATE TABLE q8(
 -- the first time this file is imported.
 DROP VIEW IF EXISTS intermediate_step CASCADE;
 
-
 -- Define views for your intermediate steps here:
+-- reciprocals 
+create view reciprocals as
+    select ClientRating.rating as crate, DriverRating.rating as drate, ClientRating.request_id as request_id 
+    from ClientRating join DriverRating on ClientRating.request_id = DriverRating.request_id;
 
+-- inserting client id
+create view reciprocalsWithID as
+    select abs(crate - drate) as difference, client_id
+    from reciprocals natural join request;
 
 -- Your query that answers the question goes below the "insert into" line:
 INSERT INTO q8
+    select client_id, count(*) as reciprocals, avg(difference) as difference
+    from reciprocalsWithID
+    group by client_id;
+
+-- UNTESTED 
