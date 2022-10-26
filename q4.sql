@@ -10,7 +10,7 @@ CREATE TABLE q4(
     early FLOAT,
     late FLOAT
 );
-
+ 
 -- Do this for each of the views that define your intermediate steps.  
 -- (But give them better names!) The IF EXISTS avoids generating an error 
 -- the first time this file is imported.
