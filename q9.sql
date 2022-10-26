@@ -48,3 +48,5 @@ create view ClientsWhoDontRateEveryDriver as
 INSERT INTO q9
     select client.client_id, email
     from client except (select client_id from ClientsWhoDontRateEveryDriver);
+
+-- NOT TESTED 
