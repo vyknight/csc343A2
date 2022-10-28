@@ -115,14 +115,30 @@ class Assignment2:
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
+        cursor = connection.cursor()
         try:
             # TODO: implement this method
+            # Get the max current shift id
+            cursor.execute("select max(shift_id) from ClockedIn;")
+            shift_id = 1
+            for record in cursor:
+                shift_id = record[0] + 1
+            
+            # insert into ClockedIn
+            cursor.execute("insert into ClockedIn values (%s, %s, %s);", (shift_id, driver_id, when))
+
+            # insert into Location
+            cursor.execute("insert into location values (%s, %s, %s);", (shift_id, when, geo_loc))
+                        
             pass
         except pg.Error as ex:
             # You may find it helpful to uncomment this line while debugging,
             # as it will show you all the details of the error that occurred:
             # raise ex
             return False
+
+        finally:
+            cursor.close()
     def pick_up(self, driver_id: int, client_id: int, when: datetime) -> bool:
         """Record the fact that the driver with driver id <driver_id> has
         picked up the client with client id <client_id> at date time <when>.
@@ -139,14 +155,56 @@ class Assignment2:
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
+        cursor = connection.cursor()
         try:
-            # TODO: implement this method
+            # make sure that the driver is in a clocked in that hasn't been clocked out 
+            in_shift_drivers = """ 
+                        select shift_id
+                        from ClockedIn except 
+                            (select ci.shift_id as shift_id, 
+                                    ci.driver_id as driver_id, 
+                                    ci.datetime as datetime
+                             from ClockedIn ci join ClockedOut co 
+                                    on ci.shift_id = co.shift_id)
+                        where ClockedIn.driver_id = %s;
+                        """
+            cursor.execute(in_shift_drivers, (driver_id))
+            if cursor.rowcount == 0: return False
+            shift_id = cursor.fetchone()[0]
+
+            # make sure that the driver has been dispatched 
+            # and find the outstanding request id
+            active_dispatch = """
+                select d.request_id
+                from ((Dispatch) except 
+                    (select Dispatch.request_id 
+                     from Dispatch join Dropoff 
+                            on Dispatch.request_id = Dropoff.request_id)) d
+                    join Request r on d.request_id = r.request_id
+                where d.shift_id = %s and r.client_id = %s;
+                                """
+            cursor.execute(active_dispatch, (shift_id, client_id))
+            if cursor.rowcount == 0: return False
+            request_id = cursor.fetchone()[0]
+            # make sure that there is no pick up with this request_id 
+            no_pickups = """
+                select *
+                from PickUp
+                where PickUp.request_id = %s;
+            """
+            cursor.execute(no_pickups, (request_id))
+            if cursor.rowcount > 0: return False
+
+            cursor.execute("insert into PickUp values (%s, %s)", (request_id, when))
+
             pass
         except pg.Error as ex:
             # You may find it helpful to uncomment this line while debugging,
             # as it will show you all the details of the error that occurred:
             # raise ex
             return False
+        finally: 
+            cursor.close()
     # ===================== Dispatcher-related methods ===================== #
     def dispatch(self, nw: GeoLoc, se: GeoLoc, when: datetime) -> None:
         """Dispatch drivers to the clients who have requested rides in the area
