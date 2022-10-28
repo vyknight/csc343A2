@@ -221,39 +221,139 @@ class Assignment2:
         NOTE: + longitude values decrease as we move further west, and
                 latitude values decrease as we move further south.
               + You may find the PostgreSQL operators @> and <@> helpful.
+
         For all clients who have requested rides in this area (i.e., whose
         request has a source location in this area) and a driver has not
         been dispatched to them yet, dispatch drivers to them one at a time,
         from the client with the highest total billings down to the client
         with the lowest total billings, or until there are no more drivers
         available.
+
         Only drivers who meet all of these conditions are dispatched:
             (a) They are currently on an ongoing shift.
             (b) They are available and are NOT currently dispatched or on
             an ongoing ride.
             (c) Their most recent recorded location is in the area bounded by
             <nw> and <se>.
+
         When choosing a driver for a particular client, if there are several
         drivers to choose from, choose the one closest to the client's source
         location. In the case of a tie, any one of the tied drivers may be
         dispatched.
+
         Dispatching a driver is accomplished by adding a row to the Dispatch
         table. The dispatch car location is the driver's most recent recorded
         location. All dispatching that results from a call to this method is
         recorded to have happened at the same time, which is passed through
         parameter <when>.
+
         If an exception occurs during dispatch, rollback ALL changes.
+
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
+        cursor = connection.cursor()
+        west_bound, north_bound, east_bound, south_bound = nw[0], nw[1], se[0], se[1] 
         try:
-            # TODO: Implement this method
+            # clients with active requests within the target area
+            clients_in_area = """
+            create temporary view RequestsInArea as 
+                select *
+                from (request) except 
+                     (select * from request join dispatch 
+                        on request.request_id = dispatch.request_id) r
+                where r.source <@ box '((%s),(%s))';
+            """
+            cursor.execute(clients_in_area, (nw, se))
+
+            clients_with_billings = """
+            create temporary view ClientsWithBill as
+                select client_id, sum(amount) as total
+                from Request join Billed 
+                            on Request.request_id = Billed.request_id 
+                group by client_id
+            """
+            cursor.execute(clients_with_billings)
+
+            ordered_clients = """
+            create temporary view OrderedCliens as
+                select a.client_id as client_id, a.source as location
+                from RequestsInArea a join ClientsWithBill b 
+                        on a.client_id = b.client_id
+                order by total des;
+            """
+            cursor.execute(ordered_clients)
+
+            on_shift_drivers = """
+            create temporary view OnShift as 
+                select driver_id 
+                from (ClockedIn) 
+                        except (select driver_id 
+                            from ClockedIn join ClockedOut 
+                            on ClockedIn.shift_id = ClockedOut.shift_id);
+            """
+            cursor.execute(on_shift_drivers)
+
+            enroute_drivers = """
+            create temporary view Travelling as
+                select driver_id
+                from dispatch except (select shift_id 
+                                      from dispatch s join dropoff e
+                                        on s.shift_id = e.shift_id);
+            """
+            cursor.execute(enroute_drivers)
+
+            in_area = """
+            create temporary view InArea as
+                select driver_id, l.location as latest_location, ci.shift_id 
+                from ClockedIn ci join 
+                    (select * from location 
+                     group by shift_id having max(datetime)) l
+                on ci.shift_id = l.shift_id 
+                where l.location <@ (nw, se);
+            """
+            cursor.execute(in_area, (nw,se))
+
+            qualified_drivers = """
+            create temporary view Available as
+                select driver_id
+                from ((OnShift) EXCEPT (Travelling)) INTERSECT InArea;
+            """
+            cursor.execute(qualified_drivers)
+
+            dispatch_table = """
+            create temporary view DispatchTable as
+                select o.request_id as request_id,
+                        a.shift_id as shift_id, 
+                        a.latest_location as car_location
+                        %s as datetime
+                from OrderedClients o, Available a
+                group by o.client_id;
+            """
+            cursor(dispatch_table, (when))
+            iter = cursor.rowcount
+            first = cursor.fetchone()
+            cursor.execute("insert into dispatch values (%s, %s, %s, %s)", 
+                (first[0], first[1], first[2], first[3]))
+            # NOW WE NEED TO RUN IT FOR ALL FELLERS MAKING SURE TO REMOVE DRIVERS
+            
+            for i in range(0, iter):
+                cursor.execute(enroute_drivers)
+                cursor.execute(qualified_drivers)
+                cursor.execute(dispatch_table)
+                curr = cursor.fetchone()
+                cursor.execute("insert into dispatch values (%s, %s, %s, %s)", 
+                    (first[0], first[1], first[2], first[3]))
+
             pass
         except pg.Error as ex:
             # You may find it helpful to uncomment this line while debugging,
             # as it will show you all the details of the error that occurred:
             # raise ex
+            cursor.rollback() 
             return
+        finally:
+            cursor.close()
     # =======================     Helper methods     ======================= #
     # You do not need to understand this code. See the doctest example in
     # class GeoLoc (look for ">>>") for how to use class GeoLoc.
