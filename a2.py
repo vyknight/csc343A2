@@ -115,30 +115,60 @@ class Assignment2:
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
-        cursor = connection.cursor()
+        # Done
+        cursor = self.connection.cursor()
         try:
-            # TODO: implement this method
-            # Get the max current shift id
+            # make sure that the driver_id is present in driver
+            cursor.execute(
+                "select * from driver where driver_id = %s",
+                [driver_id]
+            )
+            if cursor.rowcount == 0:
+                # print("driver_id not in driver")
+                return False
+            # print("driver_id found in driver")
+            # make sure that the driver is not in an ongoing shift
+            cursor.execute(
+                """
+                select *
+                from ClockedIn c
+                where c.driver_id = %s 
+                        and not exists (select * from ClockedOut where
+                                        ClockedOut.shift_id = c.shift_id);
+                """,
+                [driver_id]
+            )
+            if cursor.rowcount != 0: return False;
+            # find the next shift id to use 
             cursor.execute("select max(shift_id) from ClockedIn;")
             shift_id = 1
             for record in cursor:
                 shift_id = record[0] + 1
-            
+            # print(f"max shift id: {shift_id}")
             # insert into ClockedIn
-            cursor.execute("insert into ClockedIn values (%s, %s, %s);", (shift_id, driver_id, when))
-
+            cursor.execute(
+                "insert into ClockedIn Values (%s, %s, %s);",
+                (shift_id, driver_id, when)
+            )
+            # print("info inserted into clockedin")
             # insert into Location
-            cursor.execute("insert into location values (%s, %s, %s);", (shift_id, when, geo_loc))
-                        
+            cursor.execute(
+                "insert into location values (%s, %s, %s);",
+                (shift_id, when, geo_loc)
+            )
+            # print("info inserted into location")
+            # commit the changes 
+            self.connection.commit()
+            return True
             pass
         except pg.Error as ex:
             # You may find it helpful to uncomment this line while debugging,
             # as it will show you all the details of the error that occurred:
-            # raise ex
+            raise ex
             return False
-
         finally:
             cursor.close()
+            
     def pick_up(self, driver_id: int, client_id: int, when: datetime) -> bool:
         """Record the fact that the driver with driver id <driver_id> has
         picked up the client with client id <client_id> at date time <when>.
@@ -155,56 +185,50 @@ class Assignment2:
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
-        cursor = connection.cursor()
-        try:
-            # make sure that the driver is in a clocked in that hasn't been clocked out 
-            in_shift_drivers = """ 
-                        select shift_id
-                        from ClockedIn except 
-                            (select ci.shift_id as shift_id, 
-                                    ci.driver_id as driver_id, 
-                                    ci.datetime as datetime
-                             from ClockedIn ci join ClockedOut co 
-                                    on ci.shift_id = co.shift_id)
-                        where ClockedIn.driver_id = %s;
-                        """
-            cursor.execute(in_shift_drivers, (driver_id))
+        cursor = self.connection.cursor()
+        try: 
+        	# not testing for when driver_id not in driver because it's not
+        	# specified and the assignment handout promised not to check it 
+            # check driver in active shift
+            in_shift = """
+                select c.shift_id
+                from ClockedIn c
+                where c.driver_id = %s and
+                        not exists (select * from ClockedOut co
+                                    where co.shift_id = c.shift_id); 
+            """
+            cursor.execute(in_shift, [driver_id])
             if cursor.rowcount == 0: return False
             shift_id = cursor.fetchone()[0]
-
-            # make sure that the driver has been dispatched 
-            # and find the outstanding request id
-            active_dispatch = """
+            
+            # check driver has been dispatched and haven't picked up the client
+            # find request_id 
+            dispatched = """
                 select d.request_id
-                from ((Dispatch) except 
-                    (select Dispatch.request_id 
-                     from Dispatch join Dropoff 
-                            on Dispatch.request_id = Dropoff.request_id)) d
-                    join Request r on d.request_id = r.request_id
-                where d.shift_id = %s and r.client_id = %s;
-                                """
-            cursor.execute(active_dispatch, (shift_id, client_id))
+                from Dispatch d, Request r
+                where d.shift_id = %s 
+                    and r.client_id = %s 
+                    and d.request_id = r.request_id 
+                    and not exists (select * from Pickup
+                                    where Pickup.request_id = d.request_id);
+            """
+            cursor.execute(dispatched, [shift_id, client_id])
             if cursor.rowcount == 0: return False
             request_id = cursor.fetchone()[0]
-            # make sure that there is no pick up with this request_id 
-            no_pickups = """
-                select *
-                from PickUp
-                where PickUp.request_id = %s;
-            """
-            cursor.execute(no_pickups, (request_id))
-            if cursor.rowcount > 0: return False
-
-            cursor.execute("insert into PickUp values (%s, %s)", (request_id, when))
-
+            
+            # if made this far all three conditions should've been met
+            cursor.execute("insert into Pickup values (%s, %s);",
+                           [request_id, when])
+            self.connection.commit()
+            return True
             pass
         except pg.Error as ex:
-            # You may find it helpful to uncomment this line while debugging,
-            # as it will show you all the details of the error that occurred:
-            # raise ex
+            raise ex
             return False
-        finally: 
+        finally:
             cursor.close()
+            
+            
     # ===================== Dispatcher-related methods ===================== #
     def dispatch(self, nw: GeoLoc, se: GeoLoc, when: datetime) -> None:
         """Dispatch drivers to the clients who have requested rides in the area
@@ -221,139 +245,139 @@ class Assignment2:
         NOTE: + longitude values decrease as we move further west, and
                 latitude values decrease as we move further south.
               + You may find the PostgreSQL operators @> and <@> helpful.
-
         For all clients who have requested rides in this area (i.e., whose
         request has a source location in this area) and a driver has not
         been dispatched to them yet, dispatch drivers to them one at a time,
         from the client with the highest total billings down to the client
         with the lowest total billings, or until there are no more drivers
         available.
-
         Only drivers who meet all of these conditions are dispatched:
             (a) They are currently on an ongoing shift.
             (b) They are available and are NOT currently dispatched or on
             an ongoing ride.
             (c) Their most recent recorded location is in the area bounded by
             <nw> and <se>.
-
         When choosing a driver for a particular client, if there are several
         drivers to choose from, choose the one closest to the client's source
         location. In the case of a tie, any one of the tied drivers may be
         dispatched.
-
         Dispatching a driver is accomplished by adding a row to the Dispatch
         table. The dispatch car location is the driver's most recent recorded
         location. All dispatching that results from a call to this method is
         recorded to have happened at the same time, which is passed through
         parameter <when>.
-
         If an exception occurs during dispatch, rollback ALL changes.
-
         Precondition:
             - <when> is after all dates currently recorded in the database.
         """
-        cursor = connection.cursor()
-        west_bound, north_bound, east_bound, south_bound = nw[0], nw[1], se[0], se[1] 
+        cursor = self.connection.cursor()
         try:
-            # clients with active requests within the target area
+            # active clients in area
             clients_in_area = """
-            create temporary view RequestsInArea as 
-                select *
-                from (request) except 
-                     (select * from request join dispatch 
-                        on request.request_id = dispatch.request_id) r
-                where r.source <@ box '((%s),(%s))';
+            create temporary view ClientsInArea as
+                select r.client_id as client_id,
+                    r.source as location,
+                    r.request_id as request_id
+                from request r
+                where r.source <@ box '(%s, %s)'
+                    and not exists (select * from Dispatch
+                                    where Dispatch.request_id = r.request_id);
             """
             cursor.execute(clients_in_area, (nw, se))
-
+            num_clients = cursor.rowcount
+            
+            # get the billings of these clients 
             clients_with_billings = """
             create temporary view ClientsWithBill as
                 select client_id, sum(amount) as total
-                from Request join Billed 
-                            on Request.request_id = Billed.request_id 
+                from Request r join Billed b on r.request_id = b.request_id
+                where exists (select * from ClientsInArea c
+                              where c.client_id = r.client_id)
                 group by client_id
+                order by total desc;
             """
             cursor.execute(clients_with_billings)
-
-            ordered_clients = """
-            create temporary view OrderedCliens as
-                select a.client_id as client_id, a.source as location
-                from RequestsInArea a join ClientsWithBill b 
-                        on a.client_id = b.client_id
-                order by total des;
+            
+            # put client information together
+            clients_info = """
+            create temporary view ClientInfo as
+                select b.client_id as client_id,
+                    a.location as location,
+                    b.total as total,
+                    a.request_id as request_id
+                from ClientsWithBill b join ClientsInArea a
+                    on b.client_id = a.client_id;
             """
-            cursor.execute(ordered_clients)
-
+            cursor.execute(clients_info)
+            
+            # get on shift drivers
             on_shift_drivers = """
-            create temporary view OnShift as 
-                select driver_id 
-                from (ClockedIn) 
-                        except (select driver_id 
-                            from ClockedIn join ClockedOut 
-                            on ClockedIn.shift_id = ClockedOut.shift_id);
+            create temporary view OnShift as
+                select driver_id, shift_id
+                from ClockedIn c
+                where not exists (select * from ClockedOut
+                                  where ClockedOut.shift_id = c.shift_id);
             """
             cursor.execute(on_shift_drivers)
-
-            enroute_drivers = """
-            create temporary view Travelling as
-                select driver_id
-                from dispatch except (select shift_id 
-                                      from dispatch s join dropoff e
-                                        on s.shift_id = e.shift_id);
+            
+            # get drivers that haven't been dispatched
+            not_dispatched = """
+            create temporary view NotDispatched as
+                select driver_id, shift_id
+                from OnShift
+                where not exists -- an active dispatch
+                    (select * from Dispatch d where 
+                        d.shift_id = OnShift.shift_id -- dispatch of this shift
+                        and not exists -- without a dropoff (therefore active)
+                            (select * from Dropoff p where 
+                                d.request_id = p.request_id));
             """
-            cursor.execute(enroute_drivers)
-
+            
+            # get drivers that are in the area 
             in_area = """
             create temporary view InArea as
-                select driver_id, l.location as latest_location, ci.shift_id 
-                from ClockedIn ci join 
-                    (select * from location 
-                     group by shift_id having max(datetime)) l
-                on ci.shift_id = l.shift_id 
-                where l.location <@ (nw, se);
+                select driver_id, l.location as latest_location
+                from NotDispatched n join
+                     (select * from location 
+                      group by shift_id having max(datetime)) l
+                     on n.shift_id = l.shift_id
+                where l.location <@ (%s, %s);
             """
-            cursor.execute(in_area, (nw,se))
-
-            qualified_drivers = """
-            create temporary view Available as
-                select driver_id
-                from ((OnShift) EXCEPT (Travelling)) INTERSECT InArea;
-            """
-            cursor.execute(qualified_drivers)
-
+            # all drivers in in_area should not fulfill all criteria
+            
+            # get the next dispatch
             dispatch_table = """
             create temporary view DispatchTable as
-                select o.request_id as request_id,
-                        a.shift_id as shift_id, 
-                        a.latest_location as car_location
-                        %s as datetime
-                from OrderedClients o, Available a
-                group by o.client_id;
+                select c.request_id as request_id,
+                    d.shift_id as shift_id,
+                    d.latest_location as car_location
+                from ClientInfo c,
+                    (select * from InArea group by driver_id
+                     having min(point c.location <-> point latest_location) d
+                group by c.client_id;
             """
-            cursor(dispatch_table, (when))
-            iter = cursor.rowcount
-            first = cursor.fetchone()
-            cursor.execute("insert into dispatch values (%s, %s, %s, %s)", 
-                (first[0], first[1], first[2], first[3]))
-            # NOW WE NEED TO RUN IT FOR ALL FELLERS MAKING SURE TO REMOVE DRIVERS
             
-            for i in range(0, iter):
-                cursor.execute(enroute_drivers)
-                cursor.execute(qualified_drivers)
+            for i in range(0, num_clients):
+                cursor.execute("drop view NotDispatched cascade;")
+                cursor.execute(not_dispatched) 
+                cursor.execute(in_area, [nw, se])
                 cursor.execute(dispatch_table)
-                curr = cursor.fetchone()
-                cursor.execute("insert into dispatch values (%s, %s, %s, %s)", 
-                    (first[0], first[1], first[2], first[3]))
-
+                cursor.scroll(i, 'absolute')
+                result = cursor.fetchone()
+                cursor.execute(
+                               "insert into dispatch values (%s, %s, %s, %s);",
+                               [result[0], result[1], result[2], when]
+                              )
+            self.connection.commit()
             pass
         except pg.Error as ex:
-            # You may find it helpful to uncomment this line while debugging,
-            # as it will show you all the details of the error that occurred:
-            # raise ex
-            cursor.rollback() 
+            cursor.rollback()
+            raise ex
             return
         finally:
             cursor.close()
+
+
     # =======================     Helper methods     ======================= #
     # You do not need to understand this code. See the doctest example in
     # class GeoLoc (look for ">>>") for how to use class GeoLoc.
@@ -395,6 +419,93 @@ class Assignment2:
             )
             pg_ext.register_type(geo_loc_type)
             pg_ext.register_adapter(GeoLoc, adapt_geo_loc)
+            
+def test_clocked_in() -> None:
+	a2 = Assignment2()
+	try: 
+		connected = a2.connect("csc343h-liuzeku4", 
+								"liuzeku4", "2594002137Teach")
+		print(f"[Connected] Expect True | Got {connected}.")
+		# - - - - - - - - - - - - - - -
+		# This driver doesn't exist in db
+		clocked_in = a2.clock_in(
+			989898, datetime.now(), GeoLoc(-79.233, 43.712)
+        )
+		print(f"[ClockIn Not Exist] Expected False | Got {clocked_in}.")
+		# driver does exist in db
+		clocked_in = a2.clock_in(
+        	22222, datetime.now(), GeoLoc(-79.233, 43.712)
+      	)
+		print(f"[ClockIn Exist] Expected True | Got {clocked_in}.")
+		 # Same driver clocks in again
+		clocked_in = a2.clock_in(
+			22222, datetime.now(), GeoLoc(-79.233, 43.712)
+        )
+		print(f"[ClockIn Again] Expected False | Got {clocked_in}.")
+	except pg.Error as ex:
+		raise ex
+		print("exception occurred")
+		return
+	finally:
+		a2.disconnect()
+		print("a2 disconnected")
+		
+		
+def test_pickup() -> None:
+    a2 = Assignment2()
+    try:
+        connected = a2.connect("csc343h-liuzeku4", "liuzeku4",
+                               "2594002137Teach")
+        print(f"[Connected] Expect True | Got {connected}.")
+        
+        # this driver picks up successfully
+        pickup = a2.pick_up(1, 1, datetime.now())
+        print(f"[Pickup Success] Expected True | Got {pickup}.")
+        
+        # this driver is not on shift 
+        pickup = a2.pick_up(2, 2, datetime.now())
+        print(f"[Not on shift] Expected False | Got {pickup}.")
+        
+        # this driver has not been dispatched to pick up the client
+        pickup = a2.pick_up(3, 3, datetime.now())
+        print(f"[Not dispatched] Expected False | Got {pickup}.")
+        
+        # this driver pick up already recorded
+        pickup = a2.pick_up(1, 1, datetime.now())
+        print(f"[Already recorded] Expected False | Got {pickup}.")
+        
+    except pg.Error as ex:
+        raise ex
+        print("exception occurred")
+        return
+    finally:
+        a2.disconnect()
+        print("a2 disconnected")
+
+
+def test_dispatch1() -> None:
+    a2 = Assignment2()
+    try:
+        connected = a2.connect("csc343h-liuzeku4", "liuzeku4",
+                               "2594002137Teach")
+        print(f"[Connected] Expect True | Got {connected}.")
+        # 1 client many drivers
+        # success
+       	dispatch = a2.dispatch((0, 10), (10, 0), datetime.now())
+       	print(f"[Dispatch success] Expected True | Got {dispatch}.")
+        # driver not on shift
+        # driver already dispatched
+        # driver not in area
+    
+    except pg.Error as ex:
+        raise ex
+        print("exception occurred")
+        return
+    finally:
+        a2.disconnect()
+        print("a2 disconnected")
+        
+        
 def sample_test_function() -> None:
     """A sample test function."""
     a2 = Assignment2()
@@ -422,6 +533,8 @@ def sample_test_function() -> None:
             22222, datetime.now(), GeoLoc(-79.233, 43.712)
         )
         print(f"[ClockIn] Expected False | Got {clocked_in}.")
+    except:
+    	return
     finally:
         a2.disconnect()
 if __name__ == "__main__":
@@ -432,4 +545,7 @@ if __name__ == "__main__":
     # doctest.testmod()
     # TODO: Put your testing code here, or call testing functions such as
     #   this one:
-    sample_test_function()
+    # sample_test_function()
+    # test_clocked_in()
+    #test_pickup()
+    test_dispatch1()
