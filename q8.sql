@@ -14,7 +14,7 @@ CREATE TABLE q8(
 -- (But give them better names!) The IF EXISTS avoids generating an error 
 -- the first time this file is imported.
 DROP VIEW IF EXISTS Reciprocals CASCADE;
-DROP VIEW IF EXISTS ReciprocalsWithID
+DROP VIEW IF EXISTS ReciprocalsWithID;
 
 -- Define views for your intermediate steps here:
 -- reciprocals 
@@ -33,4 +33,4 @@ INSERT INTO q8
     from reciprocalsWithID
     group by client_id;
 
--- UNTESTED 
+-- TESTED 

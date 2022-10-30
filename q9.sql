@@ -20,13 +20,12 @@ DROP VIEW IF EXISTS ClientsWhoDontRateEveryDriver CASCADE;
 -- Define views for your intermediate steps here:
 -- client with every driver he's been with
 create view ClientAndDriver as
-    select client_id as client_id, driver_id as driver_id
+    select client_id, driver_id
     from request, dispatch, dropoff, ClockedIn 
     -- dropoff included for those edge cases where there's a dispatch but the ride doens't go through 
     where request.request_id = dispatch.request_id
             and dispatch.shift_id = ClockedIn.shift_id
-            and dispatch.request_id = dropoff.request_id
-    group by client_id, driver_id;
+            and dispatch.request_id = dropoff.request_id;
 
 -- linking driver with client rating
 create view RatingWithIDs as
@@ -40,13 +39,25 @@ create view RatingWithIDs as
 -- remember the old example of how we got a list of all the courses that aren't int the same semester 
 -- clients who didn't rate every driver 
 create view ClientsWhoDontRateEveryDriver as  
-    ClientAndDriver except RatingWithIDs;
+    select cd.client_id
+    from ClientAndDriver cd
+    where not exists (select * from RatingWithIds r 
+    			where r.driver_id = cd.driver_id and r.client_id = cd.client_id);
+    
+    
+  --  * from ((select * from ClientAndDriver) except (select * from RatingWithIDs)) a;
 -- since we have one tuple for every single client and driver in ride pair and one tuple for every single client and driver in rating pair
 -- they should cancel out 
 
 -- Your query that answers the question goes below the "insert into" line:
 INSERT INTO q9
-    select client.client_id, email
-    from client except (select client_id from ClientsWhoDontRateEveryDriver);
+    select c.client_id, email
+    from (select distinct client.client_id, email 
+    		from client join ClientAndDriver 
+    		on client.client_id = ClientAndDriver.client_id) c
+    where not exists 
+    	 (select * from ClientsWhoDontRateEveryDriver d 
+    	  where c.client_id = d.client_id);
 
--- NOT TESTED 
+-- TESTED
+

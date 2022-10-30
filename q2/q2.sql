@@ -49,7 +49,7 @@ Create View FiveHundo As
 
 -- clients who had fewer rides in 2021 than in 2020 
 Create View FewerRides As 
-	select twenty.client_id as client_id, twenty.numRides - twentyone.numRides as decline
+	select twenty.client_id as client_id, twentyone.numRides - twenty.numRides as decline
 	from 
 		(select client_id, count(*) as numRides 
 			from rides 
