@@ -345,6 +345,11 @@ class Assignment2:
             """
             # all drivers in in_area should not fulfill all criteria
             
+            # DON'T DO THIS TABLE SHIT 
+            # GET THE BOYS AND JUST USE A LOOP TO FIND WHO TO USE 
+            # GET THE CLIENTS INTO A LIST 
+            # STOP 
+
             # get the next dispatch
             dispatch_table = """
             create temporary view DispatchTable as
