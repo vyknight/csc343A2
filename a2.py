@@ -13,6 +13,7 @@ import psycopg2.extensions as pg_ext
 from typing import Optional, List, Any
 from datetime import datetime
 import re
+import math
 class GeoLoc:
     """A geographic location.
     === Instance Attributes ===
@@ -276,21 +277,26 @@ class Assignment2:
             clients_in_area = """
             create temporary view ClientsInArea as
                 select r.client_id as client_id,
-                    r.source as location,
+                    r.source[0] as longtitude,
+                    r.source[1] as latitude,
                     r.request_id as request_id
                 from request r
-                where r.source <@ box '(%s, %s)'
+                where r.source <@ box '%s, %s'
                     and not exists (select * from Dispatch
                                     where Dispatch.request_id = r.request_id);
             """
-            cursor.execute(clients_in_area, (nw, se))
-            num_clients = cursor.rowcount
+            cursor.execute(clients_in_area, [nw, se])
+            
+            print(f'clients in area')
+            cursor.execute("select * from ClientsInArea;")
+            for result in cursor:
+                print(result)
             
             # get the billings of these clients 
             clients_with_billings = """
             create temporary view ClientsWithBill as
-                select client_id, sum(amount) as total
-                from Request r join Billed b on r.request_id = b.request_id
+                select client_id, coalesce(sum(amount), integer '0') as total
+                from Request r left join Billed b on r.request_id = b.request_id
                 where exists (select * from ClientsInArea c
                               where c.client_id = r.client_id)
                 group by client_id
@@ -298,17 +304,34 @@ class Assignment2:
             """
             cursor.execute(clients_with_billings)
             
+            print(f'clients with billings')
+            cursor.execute("select * from clientsInArea;")
+            for result in cursor:
+                print(result)
+            
             # put client information together
             clients_info = """
             create temporary view ClientInfo as
                 select b.client_id as client_id,
-                    a.location as location,
+                    a.longtitude as longtitude,
+                    a.latitude as latitude,
                     b.total as total,
                     a.request_id as request_id
                 from ClientsWithBill b join ClientsInArea a
                     on b.client_id = a.client_id;
             """
             cursor.execute(clients_info)
+            
+            print(f'clients_info')
+            cursor.execute("select * from clientInfo;")
+            clients = []
+            for result in cursor:
+                clients.append(result)
+                print(result)
+                
+            print(f'clients list')
+            for result in clients:
+                print(result)
             
             # get on shift drivers
             on_shift_drivers = """
@@ -319,6 +342,11 @@ class Assignment2:
                                   where ClockedOut.shift_id = c.shift_id);
             """
             cursor.execute(on_shift_drivers)
+            
+            print(f'on_shift_drivers')
+            cursor.execute("select * from OnShift;")
+            for result in cursor:
+                print(result)
             
             # get drivers that haven't been dispatched
             not_dispatched = """
@@ -332,51 +360,78 @@ class Assignment2:
                             (select * from Dropoff p where 
                                 d.request_id = p.request_id));
             """
+            cursor.execute(not_dispatched)
+            
+            print(f'not dispatched')
+            cursor.execute("select * from NotDispatched;")
+            for result in cursor:
+                print(result)
             
             # get drivers that are in the area 
             in_area = """
             create temporary view InArea as
-                select driver_id, l.location as latest_location
+                select driver_id, n.shift_id, 
+                       l.location[0] as driver_longtitude,
+                       l.location[1] as driver_latitude
                 from NotDispatched n join
                      (select * from location 
-                      group by shift_id having max(datetime)) l
+                      group by shift_id, datetime 
+                      order by datetime desc) l
                      on n.shift_id = l.shift_id
-                where l.location <@ (%s, %s);
+                where l.location <@ box '%s, %s';
             """
             # all drivers in in_area should not fulfill all criteria
+            cursor.execute(in_area, [nw, se])
+            drivers = []
+            cursor.execute("select * from InArea;")
+            print(f'in area drivers')
+            for result in cursor:
+                drivers.append(result)
+                print(result)
+              
+            print(f'drivers')
+            for driver in drivers:
+                print(driver)
+                
+            # clients = [(client_id, longtitude, latitude, total, request_id)]
+            # drivers = [(driver_id, shift_id, longtitude, latitude)]
             
-            # DON'T DO THIS TABLE SHIT 
-            # GET THE BOYS AND JUST USE A LOOP TO FIND WHO TO USE 
-            # GET THE CLIENTS INTO A LIST 
-            # STOP 
-
-            # get the next dispatch
-            dispatch_table = """
-            create temporary view DispatchTable as
-                select c.request_id as request_id,
-                    d.shift_id as shift_id,
-                    d.latest_location as car_location
-                from ClientInfo c,
-                    (select * from InArea group by driver_id
-                     having min(point c.location <-> point latest_location) d
-                group by c.client_id;
-            """
+            print(f'dispatch loop')
+            for client in clients:
+                # print(f'client = {client}')
+                closestDriver = None
+                minDistance = 99999.9 # can't compare with none
+                if len(driver) == 0:
+                    break
+                for driver in drivers:
+                    # inner loop
+                    print(f'curr inner loop driver = {driver}')
+                    dist = math.sqrt(
+                                     (client[1] - driver[2])**2
+                                     +
+                                     (client[2] - driver[3])**2
+                                    )
+                    print(f'dist = {dist}')
+                    if dist < minDistance:
+                        print(f'if statement reached')
+                        closestDriver = driver
+                        minDistance = dist
+                    else: print(f'else statement reached')
+                print(f'closest driver = {closestDriver}')
+                dispatch_insert_query = """
+                insert into dispatch values (%s, %s, '(%s, %s)', %s);
+                """
+                cursor.execute(dispatch_insert_query,
+                              [client[4], closestDriver[1],
+                               closestDriver[2], closestDriver[3], when])
+                drivers.remove(closestDriver)
             
-            for i in range(0, num_clients):
-                cursor.execute("drop view NotDispatched cascade;")
-                cursor.execute(not_dispatched) 
-                cursor.execute(in_area, [nw, se])
-                cursor.execute(dispatch_table)
-                cursor.scroll(i, 'absolute')
-                result = cursor.fetchone()
-                cursor.execute(
-                               "insert into dispatch values (%s, %s, %s, %s);",
-                               [result[0], result[1], result[2], when]
-                              )
+            
             self.connection.commit()
+            return True
             pass
         except pg.Error as ex:
-            cursor.rollback()
+            self.connection.rollback()
             raise ex
             return
         finally:
@@ -429,7 +484,7 @@ def test_clocked_in() -> None:
 	a2 = Assignment2()
 	try: 
 		connected = a2.connect("csc343h-liuzeku4", 
-								"liuzeku4", "2594002137Teach")
+								"liuzeku4", "")
 		print(f"[Connected] Expect True | Got {connected}.")
 		# - - - - - - - - - - - - - - -
 		# This driver doesn't exist in db
@@ -460,7 +515,7 @@ def test_pickup() -> None:
     a2 = Assignment2()
     try:
         connected = a2.connect("csc343h-liuzeku4", "liuzeku4",
-                               "2594002137Teach")
+                               "")
         print(f"[Connected] Expect True | Got {connected}.")
         
         # this driver picks up successfully
@@ -492,7 +547,7 @@ def test_dispatch1() -> None:
     a2 = Assignment2()
     try:
         connected = a2.connect("csc343h-liuzeku4", "liuzeku4",
-                               "2594002137Teach")
+                               "")
         print(f"[Connected] Expect True | Got {connected}.")
         # 1 client many drivers
         # success
@@ -553,4 +608,4 @@ if __name__ == "__main__":
     # sample_test_function()
     # test_clocked_in()
     #test_pickup()
-    test_dispatch1()
+    #test_dispatch1()
