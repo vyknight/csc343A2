@@ -281,11 +281,13 @@ class Assignment2:
                     r.source[1] as latitude,
                     r.request_id as request_id
                 from request r
-                where r.source <@ box(%s, %s)
+                where r.source <@ box '(%s, %s), (%s, %s)'
                     and not exists (select * from Dispatch
                                     where Dispatch.request_id = r.request_id);
             """
-            cursor.execute(clients_in_area, [nw, se])
+            cursor.execute(clients_in_area, [nw.longitude, nw.latitude,
+                                             se.longitude, se.latitude])
+
             
             print(f'clients in area')
             cursor.execute("select * from ClientsInArea;")
@@ -378,10 +380,11 @@ class Assignment2:
                       group by shift_id, datetime 
                       order by datetime desc) l
                      on n.shift_id = l.shift_id
-                where l.location <@ box '%s, %s';
+                where l.location <@ box '(%s, %s), (%s, %s)';
             """
             # all drivers in in_area should not fulfill all criteria
-            cursor.execute(in_area, [nw, se])
+            cursor.execute(in_area, [nw.longitude, nw.latitude, 
+                                     se.longitude, se.latitude])
             drivers = []
             cursor.execute("select * from InArea;")
             print(f'in area drivers')
@@ -401,7 +404,7 @@ class Assignment2:
                 # print(f'client = {client}')
                 closestDriver = None
                 minDistance = 99999.9 # can't compare with none
-                if len(driver) == 0:
+                if len(drivers) == 0:
                     break
                 for driver in drivers:
                     # inner loop
