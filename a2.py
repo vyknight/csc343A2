@@ -598,6 +598,7 @@ def sample_test_function() -> None:
     finally:
         a2.disconnect()
 if __name__ == "__main__":
+    pass
     # Un comment-out the next two lines if you would like all the doctest
     # examples (see ">>>" in the method and class docstrings) to be run
     # and checked.
