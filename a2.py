@@ -281,7 +281,7 @@ class Assignment2:
                     r.source[1] as latitude,
                     r.request_id as request_id
                 from request r
-                where r.source <@ box '%s, %s'
+                where r.source <@ box(%s, %s)
                     and not exists (select * from Dispatch
                                     where Dispatch.request_id = r.request_id);
             """
